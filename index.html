@@ -1,0 +1,85 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XAgentic | 神经智能情报操作系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;500;600;700;800&display=swap');
+        
+        :root {
+            --bg-obsidian: #020617;
+            --glass-surface: rgba(15, 23, 42, 0.7);
+            --accent-cyan: #06b6d4;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+        }
+
+        body {
+            font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Inter", sans-serif;
+            background-color: var(--bg-obsidian);
+            color: var(--text-primary);
+            -webkit-font-smoothing: antialiased;
+            overflow: hidden;
+            letter-spacing: -0.01em;
+        }
+
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* 苹果级磨砂玻璃 */
+        .glass-panel {
+            background: var(--glass-surface);
+            backdrop-filter: blur(40px) saturate(180%);
+            -webkit-backdrop-filter: blur(40px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .glass-card {
+            background: rgba(30, 41, 59, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .glass-card:hover {
+            background: rgba(30, 41, 59, 0.6);
+            border-color: rgba(6, 182, 212, 0.3);
+            transform: translateY(-4px);
+        }
+
+        /* 文字层级控制 */
+        .display-hero { font-size: 3rem; font-weight: 800; letter-spacing: -0.04em; line-height: 1.1; }
+        .section-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.02em; }
+        .label-sm { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-secondary); }
+        
+        /* 交互反馈 */
+        .btn-primary {
+            background: #fff;
+            color: #000;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .btn-primary:active { transform: scale(0.96); }
+        .btn-primary:hover { background: #06b6d4; }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
+    "recharts": "https://esm.sh/recharts@^3.6.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

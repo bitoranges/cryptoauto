@@ -1,0 +1,8 @@
+{
+  "name": "XAgentic Crypto AI Dashboard",
+  "description": "A semi-automated AI x Crypto intelligence system for monitoring, verifying, and drafting social media signals with a human-in-the-loop review desk.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

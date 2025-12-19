@@ -1,0 +1,311 @@
+下面是把你这套 **AI × Crypto · XAgentic Semi-Automation** 按 PM 可落地方式拆成 **Phase → Epic → Story（含 AC/依赖/DoD）** 的工程 Backlog（可以直接搬进 Jira/Notion）。我默认采用我们刚刚锁定的 4 个决策（仅官方 API、MVP 不抓 X 指标、Fast Lane 异步核验、Traffic TTL=2h）。
+
+---
+
+# 0) 先定交付节奏（PM 视角的“切片”）
+
+**优先级铁律：先闭环能用（Phase 0）→ 再三角验证更准（Phase 1）→ 再自动回写/自适应优化（Phase 2）**
+
+**Phase 0 的定义**：你每天可以稳定用它完成
+“看到候选 → 看证据/来源 → 改稿 → approve/reject（必填原因）→ 一键复制发 X → 回写推文链接”。
+
+---
+
+# Phase 0：闭环可用（最小可发布）
+
+> 目标：Collectors → 入库 → 去重/Story → Draft → 审核台 → Copy-to-X → 记录动作
+
+## P0-E1 配置与契约（Contract & Config）
+
+**目的**：所有模块对齐同一套枚举/字段/版本，避免返工。
+
+### P0-S1：定义全局枚举与字段契约（Schema/Enums）
+
+* **内容**：domain、signal_type、lane、track、publish_level、verification_status、draft_status、reject_reason 等允许值集合
+* **AC**
+
+  1. 后端入库前校验枚举，不合法直接失败并记录错误
+  2. 前端下拉/过滤严格来自枚举
+* **依赖**：无
+* **DoD**：Schema 文件 + 单测覆盖非法值
+
+### P0-S2：配置加载与 config_version 贯穿全链路
+
+* **内容**：加载 app.yaml（含 TTL/频率/阈值），每条 signal/draft 必带 config_version
+* **AC**
+
+  1. signals/drafts/model_runs 均落库 config_version
+  2. 日志能追溯每条数据使用的 config_version
+* **依赖**：P0-S1
+* **DoD**：配置校验 + 默认值策略 + 错误提示清晰
+
+---
+
+## P0-E2 LLM 统一封装（LLM Router & Provider Adapters）
+
+**目的**：业务代码只写一次，不到处接 3 套 API。
+
+### P0-S3：实现 llm_router 统一接口（支持 3 Provider）
+
+* **内容**：OpenAI/xAI/Google 三个 provider adapter + 统一返回结构（text/json、usage、latency、error）
+* **AC**
+
+  1. 任意节点调用 router 时不关心厂商差异
+  2. 统一超时/重试/退避策略可配置
+* **依赖**：P0-E1
+* **DoD**：可本地跑通 3 家最小调用 + 失败可观测
+
+### P0-S4：model_runs 可观测落库（成本/耗时/错误）
+
+* **AC**
+
+  1. 每次 LLM 调用写入 model_runs（node/model/latency/success/error）
+  2. 失败不吞异常，能在 UI/日志定位
+* **依赖**：P0-S3、DB 迁移（P0-S6）
+* **DoD**：聚合查询示例 + 关键字段非空约束
+
+---
+
+## P0-E3 Collectors（官方 API + RSS）
+
+**目的**：把“发现层”跑起来，产出 raw_items，并且可追溯。
+
+### P0-S5：LLM Task Collector（多模型三跑 + 合并去重）
+
+* **内容**：按 tasks.yaml/prompts.yaml 运行；并行跑 grok/gpt/gemini；合并策略 union_then_dedupe
+* **AC**
+
+  1. 每次运行能看到“每个模型各自产出的候选列表”
+  2. 合并后同 origin_url/tweet_id 不重复入库
+  3. raw_items.meta 包含 mentioned_by_models + discovery_consensus_score
+* **依赖**：P0-S3、P0-S6（DB）
+* **DoD**：任务运行日志 + 幂等写入
+
+### P0-S6：RSS/Official Collector（白名单源配置化）
+
+* **AC**
+
+  1. RSS 拉取入库 raw_items，支持 source_profiles.yaml 配置新增源
+  2. guid/link 去重生效
+* **依赖**：P0-S6（DB）
+* **DoD**：至少接通 2 个 official RSS + 1 个媒体 RSS
+
+### P0-S7：origin_url 校验器 UrlValidator（MVP 必做）
+
+* **内容**：可访问/可解析 external_id/canonical_url；失败策略明确
+* **AC**
+
+  1. origin_url 校验失败 → draft 进入 needs_more_evidence 或直接 reject(low_cred)
+  2. UI 能看到失败原因（例如无法访问/无法解析/404）
+* **依赖**：P0-S5
+* **DoD**：单测覆盖常见 URL 类型（tweet、短链、网页）
+
+---
+
+## P0-E4 数据库与入库链路（Raw → Signal → Story → Draft）
+
+**目的**：保证幂等、去重、可追溯、可复盘。
+
+### P0-S8：DB migrations（最小闭环表）
+
+* **内容**：raw_items/signals/stories/clusters/drafts/model_runs/metrics (+ indexes)
+* **AC**
+
+  1. 本地一键迁移成功
+  2. raw_hash 唯一约束生效
+* **依赖**：无
+* **DoD**：迁移脚本 + rollback 策略（至少可重建）
+
+### P0-S9：Normalize + Exact Dedupe
+
+* **AC**
+
+  1. tweet_id/rss_guid/canonical_url 命中 exact → 不重复入库（或仅更新计数）
+  2. 计数/热度写在 meta 或单列字段
+* **依赖**：P0-S8、P0-S7
+* **DoD**：重复输入回放测试通过
+
+### P0-S10：Near Dedupe + Cluster（向量聚类最小版）
+
+* **AC**
+
+  1. 相似度≥阈值归同 cluster
+  2. content < min_chars 自动降级：只做 exact，不做 embedding
+* **依赖**：P0-S8
+* **DoD**：对 10 条相似样本的聚类结果稳定可解释
+
+### P0-S11：StoryMatch + Story 状态最小实现
+
+* **AC**
+
+  1. 同事件归并 story；新事件新建 story
+  2. story timeline 记录 signal 进入/更新
+* **依赖**：P0-S10
+* **DoD**：story 列表按 latest_update_at 排序正常
+
+---
+
+## P0-E5 草稿生成与发布约束（Draft + TTL + Queue）
+
+**目的**：可发的内容对象（draft）可控、可编辑、有风控标签。
+
+### P0-S12：DraftGen（Traffic/Research 两种模板最小版）
+
+* **AC**
+
+  1. Traffic 草稿含 hook + source_link + 标签位
+  2. Research 草稿含 thesis/evidence_links/counter_case 占位（缺失则 needs_more_evidence）
+* **依赖**：P0-S11
+* **DoD**：生成内容在 UI 可编辑、可复制
+
+### P0-S13：Rumor 策略硬约束（MVP）
+
+* **AC**
+
+  1. rumor 只能进 traffic
+  2. 自动加 Rumor/Unconfirmed + Not financial advice
+  3. 检测到“价格结论/交易指引”→ 强制 manual 或拒绝
+* **依赖**：P0-S12
+* **DoD**：规则单测 + 违规则样本回归
+
+### P0-S14：Traffic TTL=2h（可配置）+ 过期提示
+
+* **AC**
+
+  1. 超过 TTL 自动标记 stale/archived（或降权）
+  2. 仍可手动 approve，但 UI 提示“已过时”
+* **依赖**：P0-S12
+* **DoD**：定时任务/后台 job 可观测
+
+### P0-S15：发布节奏限制（每小时≤2条 traffic）+ Queue
+
+* **AC**
+
+  1. 超额 draft 不丢失，进入 queue
+  2. quiet_hours 行为 queue_only
+* **依赖**：P0-S12
+* **DoD**：策略可配置 + UI 可见队列状态
+
+---
+
+## P0-E6 审核台 Console（Human-in-the-loop MVP）
+
+**目的**：Owner 的每日工作台能跑通全流程。
+
+### P0-S16：Dashboard（今日信号数/待审/分布/延迟）
+
+* **AC**
+
+  1. 今日 signals、drafts 分布可见
+  2. Fast/Slow lane 数量可见
+* **依赖**：P0-E4/E5
+* **DoD**：基础筛选与刷新机制
+
+### P0-S17：列表页（按 story/cluster 聚合 + 过滤排序）
+
+* **AC**
+
+  1. 可按 track/lane/status/reject_reason 过滤
+  2. 同 story 聚合展示，展开可看子信号
+* **依赖**：P0-S11
+* **DoD**：分页/性能基线（别一次全拉）
+
+### P0-S18：详情页（左证据/中 claims&verdict/右 draft）
+
+* **AC**
+
+  1. 左侧显示来源链接（origin_url）+ captured_at
+  2. 右侧草稿可编辑，保留标签/免责声明
+* **依赖**：P0-S12
+* **DoD**：复制按钮输出完整可发文本
+
+### P0-S19：审核动作（approve/reject/ask_more/edit/merge/split）
+
+* **AC**
+
+  1. reject 必须选 reason（duplicate/low_cred/low_impact/too_risky/not_relevant/already_known）
+  2. ask_for_more_evidence 会把 draft 状态改 needs_more_evidence，并记录原因
+  3. merge/split 会更新 story 关联并记录审计日志
+* **依赖**：P0-S18
+* **DoD**：所有动作写入 drafts.review_meta（结构化）
+
+### P0-S20：发布回写（MVP 只回写 tweet_url）
+
+* **AC**
+
+  1. 你粘贴 tweet_url 后，draft 状态置为 published
+  2. 记录 published_at、tweet_url、发布模板、版本号
+* **依赖**：P0-S19
+* **DoD**：可在 story timeline 看到“已发布条目”
+
+---
+
+## P0-E7 测试与交付（质量闸门）
+
+### P0-S21：端到端 E2E 回放脚本（raw→draft→approve→published）
+
+* **AC**：给定 5 条样本 raw_items，能稳定跑出 draft 并完成审批动作
+* **依赖**：P0-E3~E6
+* **DoD**：CI 可跑、失败能定位
+
+### P0-S22：最小部署与运行手册（/docs）
+
+* **AC**：新机器按文档能跑起来（含 env vars、db、redis、启动顺序）
+* **依赖**：全链路
+* **DoD**：README + /docs（Runbook、Acceptance）
+
+---
+
+# Phase 1：Triangulation（Verifier/Analyst/Judge/Copywriter + 纠错）
+
+> 目标：更准、更安全、更可解释（但不破坏 Phase 0 的可用性）
+
+## P1-E1 Search Agent（白名单抓证据）
+
+* **Story**：白名单域名抓取、只读解析、落 evidence（content_hash/captured_at）
+* **AC**：非白名单直接 policy_block；证据分 tier；可复盘一致
+
+## P1-E2 Verifier（confirmed/partial/unconfirmed/false）
+
+* **AC**：X/Telegram 只能证明“有人在说”；必须输出 contradictions + what_would_confirm
+
+## P1-E3 Analyst（7d Memory + 变化点）
+
+* **AC**：必须引用近 7 天 story 摘要；明确“本次变化点”
+
+## P1-E4 Judge（rule-first 风控优先）
+
+* **AC**：Verifier=false/high-risk 可直接否决；research 缺 counter_case 不得 approved
+
+## P1-E5 Copywriter-only + fact_checksum
+
+* **AC**：不可删标签/免责声明；fact_checksum 失败禁止写回
+
+## P1-E6 纠错/撤回链路（corrected/retracted）
+
+* **AC**：出现矛盾证据可生成纠错草稿并关联旧发布
+
+---
+
+# Phase 2：优化与规模化
+
+* 自动回写 X 指标（如接 API）
+* 评分权重自适应（基于 reject_reason + 发布表现）
+* 协作者权限（RBAC）
+* 动态调度更精细（backlog、错误退避、热点加频）
+* 去重/错合并标注与数据集沉淀
+
+---
+
+# 关键路径（你照这个顺序排 Sprint 最稳）
+
+1. **P0-E1 契约/配置** 
+2) **P0-E2 router + 可观测** 
+3) **P0-E3 Collectors + UrlValidator**
+4) **P0-E4 DB+去重+Story** 
+5) **P0-E5 Draft+TTL+Queue** 
+6) **P0-E6 Console** 
+7) **P0-E7 E2E/文档**
+
+---
+

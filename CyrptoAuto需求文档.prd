@@ -1,0 +1,1835 @@
+下面是一份**完整、可用于需求对齐/工程评估/拆解排期/验收**的《PRD v1.0》。
+我把**所有技术实现细节**（架构、配置、Schema、数据库、LangGraph 节点、调度规则 DSL 等）统一放到文档最后的**附录**，正文只保留“产品/需求/流程/验收”视角。
+
+---
+
+# AI × Crypto · XAgentic Semi-Automation 系统
+
+# 产品需求说明书 PRD v1.0
+
+## 0. 文档信息
+
+* 文档阶段：需求讨论完成 → 可进入工程拆解
+* 目标：构建一套**半自动、可控、可扩展**的信息监控与发布系统，将噪音转为可发布的流量信号与可沉淀的投研情报
+* 核心原则：**高命中率 > 覆盖率；安全 > 速度；半自动 > 无人值守；结构化优先于长文本；可追溯与可复盘优先**
+
+---
+
+## 1. 背景与目标
+
+### 1.1 背景问题
+
+AI 与 Crypto 信息密度极高，X/媒体/公告/研究混杂。人工刷新效率低且不可规模化；全自动发推风险高（事实错误、合规越界、声誉风险）。
+
+### 1.2 系统目标（Outcome）
+
+系统将原始信息加工为两类可控产物，并通过人工终审发布：
+
+* **Traffic Pool（流量候选池）**：高热度/高互动潜力的“可讨论”信息，强调速度与网感，但必须标注风险与来源
+* **Research Pool（投研候选池）**：强调可复用的结构化投研结论，必须包含证据链与反面论证（counter_case）
+
+### 1.3 关键成功指标（North Star）
+
+* **命中率**（你觉得“值得发/值得看”的比例）
+* **误报率**（被你 Reject 的比例及原因结构化）
+* **人工干预比例**（越低越好，但以安全为前提）
+* **发布表现**：曝光/互动/关注转化、收藏/引用等
+
+---
+
+## 2. 范围与不做事项
+
+### 2.1 覆盖范围（Scope In）
+
+* 行业与主题：AI、Crypto、AI×Crypto（宏观、机构、叙事、项目、一级市场、Token 经济、AI infra/算力/能源/矿工转型等）
+* 信息发现：X 语境/讨论（通过 Grok Tasks 等）、RSS/媒体、交易所/项目官方、Search Agent（用于证据补全与核验）
+* 输出与交付：候选池（Traffic/Research）+ 审核台 + 草稿生成 + 半自动发布
+
+### 2.2 不做事项（Scope Out）
+
+* 关键词全网爬虫式“无差别抓取”
+* 无人值守自动发推（必须 Human-in-the-loop）
+* 自动评论/对喷/多号矩阵同文发布
+* 自动生成交易建议/喊单/价格指引
+
+---
+
+## 3. 核心概念与术语（统一口径）
+
+* **Collector（采集器/发现引擎）**：用于从指定信息场景中发现候选信息并结构化输出（例如 Grok/GPT/Gemini 的 Task 运行器、RSS 抓取器）
+* **Source（信息源）**：真实内容来源（tweet/thread、公告页面、媒体文章、研究报告等）
+* **Signal（信号）**：系统加工后的结构化信息对象（用于进入候选池与审核）
+* **Claim（主张）**：Signal 内可验证的最小断言单元（事件/数据/引用等）
+* **Evidence（证据）**：支持/反驳 Claim 的来源链接与摘要（必须可追溯）
+* **Story（事件/故事）**：对同一事件在时间维度的生命周期管理容器（防重复发、防打脸）
+* **Fast Lane / Slow Lane**：快道处理确定性高、风险低的信号；慢道处理 rumor/叙事/结构性变化
+* **Publish Level**：auto / semi / manual（发布权限级别）
+
+---
+
+## 4. 用户角色与使用场景
+
+### 4.1 角色
+
+* **Owner（你）**：终审发布、维护白名单与规则、复盘迭代
+* **系统（Pipeline + 多 Agent）**：发现 → 结构化 → 去重 → 分流 → 核验/分析 → 生成草稿
+* （可选）协作者：辅助审核（权限受控）
+
+### 4.2 典型使用流程（User Journey）
+
+1. 发现层 Collectors 按调度运行，生成候选条目
+2. 系统入库并结构化（Signal/Claim/Evidence/Story）
+3. 去重/聚类/归并 story
+4. Fast/SlowLane 分流 + 评分（可解释）
+5. 多 Agent 并行：Verifier 与 Analyst 并行，Judge 汇总裁决
+6. 草稿进入 Traffic/Research 候选池
+7. 你在审核台：approve / reject / ask_for_more_evidence / edit / merge / split
+8. 半自动发布（MVP：一键复制到 X）
+9. 回写发布表现与人工动作 → 用于改权重/规则/白名单
+
+---
+
+## 5. 系统总体工作流（需求级描述）
+
+主链路（必须闭环）：
+**Discover → Ingest → Normalize → Dedupe/Cluster → Story Match → Score/Route → (Fork) Verify || Analyze → Judge → Draft → Human Review → Publish → Feedback**
+
+并行与裁决原则：
+
+* Classifier 完成后：**Verifier 与 Analyst 并行**
+* 若 Verifier 判定为 false/high-risk：Judge 必须优先风控结论（可直接否决分析输出）
+
+---
+
+## 6. 信息发现与数据源（PRD 正文版）
+
+### 6.1 发现层（Discovery Layer）构成
+
+发现层由多个 **Collector** 组成，它们“调用模型/抓取源”，但最终必须落在真实 Source（可追溯链接）上：
+
+1. **LLM Task Collectors（多模型并行发现）**
+
+   * 模型：Grok / GPT / Gemini（同一任务提示词，按配置决定是否三跑）
+   * 作用：从 X 语境中发现热点/争议/rumor/叙事变化/边缘 alpha
+   * 输出要求：必须结构化，必须带 `origin_url`（tweet/thread/article）
+2. **RSS/Official Collectors（官方与媒体）**
+
+   * 作用：提供“证据层”与追溯依据（用于确认、定级、纠错）
+3. **Search Agent（搜索与补证据）**
+
+   * 作用：主要给 Verifier 用于交叉验证、补强证据链、发现矛盾点
+   * 强约束：必须区分证据 tier，防 prompt injection（详见风控要求）
+
+### 6.2 多模型并行的原则（重要）
+
+* “多模型都命中”只代表 **讨论线索强度/覆盖率提升**，**不代表事实更可信**
+* 可信度提升只能来自：**官方/监管/权威媒体/可验证数据源**的 Evidence
+
+---
+
+## 7. 信号结构化与处理规则（需求级）
+
+### 7.1 统一结构化输出（必须）
+
+系统产出的每条 Signal 必须可追溯、可验证、可复盘：
+
+* 必须包含：Signal 基础信息、Claims、Evidence、Verdict、Routing、Scores、config_version
+* Research 输出必须包含：**counter_case（硬字段）**
+
+### 7.2 去重、聚类与 Story 生命周期（必须）
+
+* **Exact 去重**：同 tweet_id / rss_guid / canonical_url 等 → 不重复入库或仅更新热度计数
+* **Near 去重/聚类**：相似度阈值归并为 cluster
+* **Story 归并**：将 cluster/实体/时间线归并到同一 story，形成事件生命周期
+* Story 状态机（需求级）：
+  `new → monitoring → verified → published → updated → retracted/corrected → archived`
+
+### 7.3 评分与分流（必须可解释）
+
+* 系统对每条 signal 输出 0–100 总分，并提供分项（用于解释与复盘）
+* 分流维度：讨论度、确认度、信息密度、影响力、风险、时效
+* 输出要求：UI 必须能看到“为什么它进 traffic / research / lane 的理由”
+
+### 7.4 Fast / SlowLane（延迟与深度）
+
+* **Fast Lane（流量快道）**
+  条件倾向：来源可靠（官方/权威媒体）+ 风险低 + 时效高
+  目标：秒级~10秒级进入 Traffic Pool（仍需你审核发布）
+* **Slow Lane（投研慢道）**
+  条件倾向：rumor、叙事变化、结构性变化、需要立场与推演
+  目标：分钟级生成更完整证据链与分析草稿 → Research Pool
+
+---
+
+## 8. 多 Agent 职责（Triangulation，需求级）
+
+### 8.1 LLM-1 Classifier（分类器）
+
+* 输入：raw/normalized 内容
+* 输出：domain、signal_type、time_sensitivity、discussion_level、initial_risk、topic、entities
+* 约束：**不判断真假**
+
+### 8.2 LLM-2 Verifier（核验器 + Search Agent）
+
+* 输出：verification_status（confirmed/partial/unconfirmed/false）
+  supporting_sources、contradictions、what_would_confirm、confidence
+* 约束：必须按证据 tier 输出；X/Telegram 只能证明“有人在说”
+
+### 8.3 LLM-3 Analyst（分析器 + Memory）
+
+* 输出：market_impact（short/mid/long）、narrative_impact、affected_assets、stance_update、key_uncertainties
+* 约束：分析前必须读取相关历史（默认 7d），并说明“本次变化点”
+
+### 8.4 LLM-4 Judge（裁判/风控/发布级别）
+
+* 输出：publish_level（auto/semi/manual）、recommended_track、required_labels、risk_notes、lane
+* 约束：风控规则优先；当 Verifier 为 false/high-risk 时可直接否决
+
+---
+
+## 9. 草稿生成、候选池与发布策略（产品需求）
+
+### 9.1 Draft（草稿对象）要求
+
+* 草稿必须可编辑、可合并、可拆分 thread
+* 草稿状态：draft / needs_more_evidence / approved / rejected / published
+
+### 9.2 Traffic Pool 输出格式（MVP）
+
+* 一句话 hook（短、强、可讨论）
+* 来源链接（至少 1 个，且可追溯）
+* 标签：Confirmed / Rumor / Update 等
+* 发布级别：auto / semi / manual
+* 风险提示（必要时）
+
+### 9.3 Research Pool 输出格式（MVP）
+
+* thesis（结论）
+* evidence_links（证据）
+* **counter_case（反面论证，硬字段）**
+* what_would_change_mind（改变观点需要什么）
+* risk_notes
+* thread outline（最多 N 条）
+
+### 9.4 Copywriter-only（Persona/Tone Transfer）
+
+* 只在 Judge 之后运行
+* 只对“结构化要点”做表达润色，不得篡改事实
+* 必须保留标签与免责声明
+* 禁止喊单/价格结论
+
+### 9.5 发布节奏（你已确认）
+
+* 每小时最多 2 条流量推
+* 每天 1 条投研 thread
+* 静默时段 queue_only（只排队不建议发）
+
+---
+
+## 10. 人工审核台（Human-in-the-loop Console）需求
+
+### 10.1 必备页面（MVP）
+
+1. **Dashboard**：今日信号数、待审数、traffic/research 分布、误报率、系统延迟概览
+2. **Signal 列表（按 story/cluster 聚合）**：支持过滤与排序
+3. **详情页（左证据右草稿）**：
+
+   * 左：Evidence（tier、摘要、链接、时间）
+   * 中：Claims/Verdict（确认状态、矛盾点、还差什么证据）
+   * 右：Draft（可编辑，模板选择，标签/风险提示）
+   * 下：Story timeline（历史演进与已发布内容）
+
+### 10.2 必备操作（MVP）
+
+* approve / reject（必须选 reason）
+* ask_for_more_evidence（回流 Verifier/补证据）
+* edit（手动改稿）
+* merge_to_story / split_story（事件归并/拆分）
+* regenerate（重写草稿，但必须保留证据与标签）
+
+### 10.3 Reject reason（结构化必填）
+
+duplicate / low_cred / low_impact / too_risky / not_relevant / already_known
+
+---
+
+## 11. 风控与合规（硬规则，需求级）
+
+### 11.1 必须 Manual 的情况
+
+* 监管执法/诉讼/政策敏感
+* 交易所负面、冻结、挤兑
+* 未证实安全事件（黑客/漏洞/攻击）
+* 明确价格指引/交易建议倾向内容（任何形式）
+
+### 11.2 Rumor 策略（你已确认）
+
+* rumor 可发布，但必须：
+
+  * 只进 Traffic Pool
+  * 必带 Rumor/Unconfirmed 标签
+  * 禁止价格结论/交易指引
+  * 保留免责声明
+
+---
+
+## 12. 指标与复盘（Metrics & Feedback）
+
+### 12.1 流量指标
+
+impressions、likes、reposts、replies、profile_clicks、follows
+
+### 12.2 投研指标
+
+bookmarks、引用、长文点击、二次传播
+
+### 12.3 系统指标
+
+命中率、误报率、人工干预比例、端到端延迟、模型调用成本、失败率
+
+### 12.4 复盘闭环（必须）
+
+* 每次 approve/reject 都写入结构化动作与原因
+* 定期根据数据调整：阈值、权重、任务频率、白名单、模板风格
+
+---
+
+## 13. 非功能需求（NFR）
+
+* 延迟：Fast lane 目标 5–10 秒进入候选池；Slow lane 分钟级
+* 稳定性：幂等写入、可重试、退避、队列积压保护
+* 安全：白名单强证据策略、防 prompt injection、密钥隔离
+* 可观测：节点级 latency/cost/error 必须记录
+* 可扩展：新增 Source/Profile/Task 不改主链路
+* 可回滚：配置版本化与可追溯（config_version）
+
+---
+
+## 14. MVP 交付范围与里程碑（建议拆解）
+
+* **Phase 0：闭环可用（最小可发布）**
+
+  * Collectors（LLM Tasks + RSS）→ 入库 → 去重/归并 story → Draft → 审核台 → 一键复制发布 → 记录动作
+* **Phase 1：Triangulation 完整落地**
+
+  * Verifier（证据分级）+ Analyst（带 7d Memory）+ Judge 裁决 + Copywriter-only
+* **Phase 2：持续优化**
+
+  * 动态加频更精细、自动抓取发布表现、评分权重迭代、协作与权限（如需要）
+
+---
+
+## 15. 验收标准（Acceptance Criteria）
+
+1. 任意 raw item 进入系统后，能被：去重/聚类/归并 story，并生成对应草稿对象
+2. rumor 草稿必须自动带标签与免责声明，且不出现价格结论
+3. research 草稿**必须包含 counter_case**，否则不得进入可发布态（至少 needs_more_evidence / manual）
+4. 审核台支持：筛选 → 查看证据 → 编辑 → approve/reject → 复制发布
+5. 每条 signal/draft 均可追溯：来源链接、证据 tier、当时 config_version、处理链路状态
+
+---
+
+补充说明：
+好，那我们把这 4 个关键决策**锁定**，并立刻进入“可开工的工程拆解 Backlog + 可验收清单（Phase 0/1/2）”。
+
+## 已锁定决策（写死到 PRD v1.0.1）
+
+1. **Collector 默认只走官方 API**（OpenAI/xAI/Google），网页自动化仅 dev-only adapter，**不进入 MVP 验收**
+2. **MVP 不自动回写 X 表现指标**：仅记录 `publish_action + tweet_url`（可选手填核心指标）
+3. **Fast Lane 定义**：先“入库 + 初判 + 草稿入池”，Verifier/联网核验**异步补齐**；UI 显示“核验中/未核验”
+4. **Traffic 过期策略**：默认 `TTL=2h`（可配置），过期自动降权/归档，仍可手动发但需提示“已过时”
+
+---
+
+## PRD v1.0.1 建议补丁（可直接复制进正文）
+
+
+* **模型接入约束**：Discovery Collectors 仅允许官方 API；任何网页自动化仅用于本地原型，不作为 MVP 验收项。
+* **origin_url 校验**：LLM 输出的 origin_url 入库前必须通过 UrlValidator（可解析/可访问/可提取外部ID或 canonical_url）；失败则进入 `needs_more_evidence` 或 `rejected(low_cred)` 并记录原因。
+* **Fast Lane 异步核验**：Fast Lane 入池不等待联网核验；Verifier 状态异步更新并在 UI 明示；Judge 在核验完成后可触发“纠错/撤回草稿”。
+* **发布指标回写**：MVP 不自动抓取 impressions 等；仅记录发布动作与推文链接，后续 Phase 2 再接 API 自动回写。
+
+---
+
+# 工程 Backlog（按 Phase 0/1/2，可直接开 Jira/Notion）
+
+## Phase 0：闭环可用（最小可发布）
+
+目标：**Collectors → 入库 → 去重/Story → 草稿 → 审核台 → 一键复制发布 → 记录动作**
+
+> 不做：联网核验、自动指标回写、协作者权限体系（都在后续）
+
+### Epic P0-1：配置与契约（Config & Enum Contract）
+
+* **P0-1.1 定义枚举契约（必须枚举化）**
+
+  * `domain/signal_type/time_sensitivity/discussion_level/verification_status/publish_level/lane/track`
+  * 验收：前后端/规则/DB 校验均只接受枚举值；非法值入库失败并可观测
+* **P0-1.2 配置加载与版本化（config_version）**
+
+  * 验收：每条 signal/draft 落库必带 config_version；可切换配置并回滚（至少支持读取不同版本）
+
+### Epic P0-2：Collectors（API 路径）
+
+* **P0-2.1 LLM Task Collector（API）**
+
+  * 输入：tasks.yaml + prompts.yaml
+  * 输出：raw_items（含 model_name/task_id/prompt_version/origin_url/mentioned_by_models）
+  * 验收：每次运行可在 UI/日志看到“每模型各自产出列表”；合并后同 origin 不重复入库
+* **P0-2.2 RSS/Official Collector**
+
+  * 验收：RSS 去重（guid/link）生效；支持 source_profiles.yaml 配置化新增源
+
+### Epic P0-3：入库、去重、聚类、Story（不含联网核验）
+
+* **P0-3.1 DB migrations（raw_items/signals/stories/drafts/model_runs/metrics）**
+
+  * 验收：一键迁移成功；核心索引齐备（raw_hash 唯一、story/status、draft/status）
+* **P0-3.2 Normalize + Exact Dedupe**
+
+  * 验收：同 tweet_id / rss_guid / canonical_url 不重复入库；重复仅更新热度计数（meta 里）
+* **P0-3.3 Near Dedupe + Cluster（embedding）**
+
+  * 验收：相似度≥阈值归同 cluster；content < min_chars 走降级策略（只做 exact）
+* **P0-3.4 StoryMatch + 生命周期最小实现**
+
+  * 验收：新事件新建 story；同事件归并 story；story 状态至少支持 new/monitoring/published/archived
+
+### Epic P0-4：Draft 生成与队列策略（含 TTL）
+
+* **P0-4.1 DraftGen（Traffic/Research 模板最小版）**
+
+  * 验收：Traffic 草稿包含 hook + source_link + 标签；Research 草稿包含 thesis/evidence_links/counter_case 占位（MVP 可先“needs_more_evidence”）
+* **P0-4.2 Traffic TTL=2h（可配置）**
+
+  * 验收：过期 draft 自动标记 stale/archived（或降低推荐）；UI 明示“已过时”
+* **P0-4.3 发布频率限制（每小时≤2条 traffic）**
+
+  * 验收：超额进入 queue（queue_only），不丢失；UI 显示“排队中”
+
+### Epic P0-5：审核台 Console（MVP）
+
+* **P0-5.1 Dashboard + 列表 + 详情页（左证据右草稿）**
+
+  * 验收：按 story/cluster 聚合；可筛选/排序；详情页能看到来源链接、基础字段、草稿内容
+* **P0-5.2 必备操作** approve/reject(reason)/edit/merge/split/ask_for_more_evidence
+
+  * 验收：所有动作写入 drafts.review_meta（结构化）；reject reason 必填
+* **P0-5.3 一键复制发布（不做自动发推）**
+
+  * 验收：按钮复制完整内容（含标签/免责声明）；并可手动填 tweet_url 回写 draft
+
+### Epic P0-6：可观测与安全底座（最小）
+
+* **P0-6.1 model_runs 记录（cost/latency/error）**
+
+  * 验收：每个节点至少记录 success/耗时/错误；可按 node/model 聚合查看
+* **P0-6.2 Prompt Injection 防护（MVP 规则）**
+
+  * 验收：任何“非白名单域名”的抓取请求直接拒绝并记录 policy_block（即便 Phase 0 未启用 Search Agent，也把规则框架立住）
+
+---
+
+## Phase 1：Triangulation 完整落地（Verifier/Analyst/Judge/Copywriter）
+
+目标：**Classifier → Verifier(异步+白名单抓证据) 与 Analyst(7d memory) 并行 → Judge 裁决 → Draft 强约束 → Copywriter-only**
+
+### Epic P1-1：UrlValidator + 证据分级
+
+* 验收：origin_url 校验失败自动转 `needs_more_evidence` 或 `rejected(low_cred)`；证据必须带 tier + captured_at + content_hash
+
+### Epic P1-2：Search Agent（白名单抓证据）
+
+* 验收：只允许 whitelist 域名；抓取只读解析；所有证据落库可追溯；拒绝执行网页指令/跳转注入
+
+### Epic P1-3：Verifier（confirmed/partial/unconfirmed/false）
+
+* 验收：输出 supporting_sources/contradictions/what_would_confirm；X/Telegram 只能证明“有人在说”，不能当 confirmed
+
+### Epic P1-4：Analyst（7d Memory）
+
+* 验收：分析前必须读取 story 近 7d 摘要与已发布记录；输出“本次变化点”
+
+### Epic P1-5：Judge（rule-first + 风控优先）
+
+* 验收：
+
+  * Verifier=false/high-risk → 直接否决或强制 manual
+  * Rumor 只进 traffic 且强制标签/免责声明
+  * Research 缺 counter_case → 不得 approved（至少 needs_more_evidence）
+
+### Epic P1-6：Copywriter-only + fact_checksum
+
+* 验收：只能吃结构化要点；不得删标签/免责声明；fact_checksum 校验失败禁止写回
+
+### Epic P1-7：纠错/撤回链路（Story corrected/retracted）
+
+* 验收：出现矛盾证据可生成“更正草稿”；story 状态可切 corrected/retracted；UI 能看到历史版本
+
+---
+
+## Phase 2：优化与规模化
+
+* **自动回写 X 指标**（如接 API）+ 看板
+* **评分权重自适应**（基于 reject_reason、发布表现）
+* **协作者权限（RBAC）**
+* **更精细的动态调度**（queue backlog、错误退避、话题加频）
+* **更强的去重/错合并标注与训练数据沉淀**
+
+---
+
+## Definition of Done（开工对齐版）
+
+一条 Signal/Draft 要算“完成闭环”，必须满足：
+
+* 有可追溯 source（origin_url/canonical_url + external_id）
+* 有 config_version、处理链路状态、可观测记录
+* 能在审核台完成 approve/reject 并写入结构化原因
+* Traffic 含标签/免责声明；Research 强制 counter_case（Phase 1 开始强制）
+
+---
+
+你现在就可以开工的下一步，我建议是：**先做 Phase 0 的 Epic P0-1~P0-5**（闭环最小可用），同时把 **枚举契约 + 验收用例**写进仓库 `/docs/Acceptance.md`，工程团队不会扯皮。
+
+如果你愿意，我可以把上面的 Backlog **改成“Jira 可直接导入的条目格式（Epic/Story/AC/Deps 字段）”**，以及补一份 `/docs/PRD_v1.0.1_delta.md` 的补丁文件内容。
+
+---
+
+---
+
+# 附录（技术与实现细节统一在这里）
+
+## 附录 A：技术架构总览（MVP）
+
+* 编排：LangGraph（状态机 + 并行 fork/join）
+* 存储：Postgres（结构化）
+* 队列：Redis Queue
+* 向量：pgvector（或 Qdrant 可替换）
+* 模型路由：Discovery 层多模型；Processing 层收敛（便于控成本与 debug）
+
+## 附录 B：统一配置文件规范（YAML 示例）
+
+> 包含：时间窗口、阈值、发布节奏、白名单路径、source_profiles、动态加频规则、copywriter-only、research 必填字段等
+> （你要的“所有时间逻辑统一到配置文件”就在这里落地）
+
+* `configs/app.yaml`（主配置）
+* `configs/source_whitelist.yaml`（白名单）
+* `configs/source_profiles.yaml`（源配置）
+* `configs/prompts.yaml`（Task Prompt 版本化）
+* `configs/tasks.yaml`（每个任务跑哪些模型 + 频率）
+
+## 附录 C：核心数据模型（Signal/Claim/Evidence/Story）
+
+* Signal 必含：claims/evidence/verdict/routing/scores/config_version
+* Story 状态机字段、timeline 记录规范
+* Research 输出强制字段：counter_case 等
+
+## 附录 D：数据库表结构（Postgres + pgvector）
+
+* raw_items / signals / claims / evidence / stories / clusters
+* drafts（草稿对象与审核状态）
+* model_runs（可观测与成本）
+* metrics（动态加频规则使用）
+* signal_vectors（向量检索/聚类）
+
+## 附录 E：LangGraph State 与节点 I/O
+
+* State Schema（含 story_id/cluster_id/config_version）
+* 节点：Ingest、Normalize、ExactDedupe、Embed+Cluster、StoryMatch、Classifier、Verifier、Analyst、Judge、DraftGen、Copywriter
+* 并行：Verifier 与 Analyst 并行；Judge 汇总裁决
+
+## 附录 F：动态调度规则 DSL（示例）
+
+* breaking_official / discussion_spike / low_activity_downshift / api_error_backoff
+* cooldown / hold_for / jitter / degraded mode
+
+## 附录 G：多模型三跑的 Collector 设计
+
+* 三模型是 Collectors，不是 Source
+* 产出必须带 origin_url；合并策略 union_then_dedupe
+* “多模型一致”仅用于讨论线索强度（discovery_consensus_score），不直接提升可信度
+
+## 附录 H：Copywriter-only 与事实不可篡改校验
+
+* 只吃结构化要点，不吃原始网页长文
+* 保留标签与免责声明、禁止喊单
+* fact_checksum（关键事实哈希）用于校验 tone 不改事实
+
+附录里加《Discovery 层多模型策略（可配置）》
+
+多模型并行仅限 Discovery；Processing 默认收敛到单模型链路（便于控成本与 debug）。
+Discovery 默认使用“轻量档”模型；仅对 Top-N 信号升级到高档模型/联网验证。
+联网/grounding 默认只在 Verifier/Judge 使用；Discovery 阶段尽量不强制联网。
+所有频率/任务开关/Top-N/降级规则均配置化，可由 Owner 自行调整，不作为固定需求。
+
+---
+
+如果你希望我把“附录 B~H”也像正文一样整理成**可直接落库的 /docs 目录文档**（例如《TDD.md》《Schemas.md》《DB.md》《Scheduler.md》），我也可以一次性给你按仓库结构拆好。
+
+
+---
+
+# AI × Crypto · XAgentic Semi-Automation 系统（工程规格 v1.0）
+
+## 0) 仓库结构建议（最小可运行骨架）
+
+```
+xagentic/
+  configs/
+    app.yaml
+    source_whitelist.yaml
+    source_profiles.yaml
+    templates.yaml
+    persona_examples.jsonl          # 可选：50条高赞推作为few-shot
+  src/
+    config.py                       # 加载+校验+热更新（可选）
+    schema.py                       # Pydantic/JSONSchema
+    storage/
+      pg.py                         # Postgres/pgvector
+      redisq.py                     # Redis队列
+    scheduler/
+      engine.py                     # CRON+事件驱动+动态加频规则
+      metrics.py                    # 指标计算/写入
+    graph/
+      state.py                      # LangGraph State
+      nodes.py                      # 节点实现
+      build.py                      # 图拓扑
+    services/
+      llm_router.py                 # 模型路由（Discovery多模型、Processing收敛）
+      search_agent.py               # 外部检索/证据抓取（带白名单与注入防护）
+  migrations/
+    001_init.sql
+```
+
+---
+
+## 1) 统一配置：`configs/app.yaml`（全量可配置）
+
+> 原则：**所有窗口/阈值/节奏/规则/白名单路径/模板/模型路由**都只写这里或其引用文件；节点里不允许硬编码常量。
+
+```yaml
+app:
+  name: xagentic
+  timezone: "Asia/Singapore"
+  env: "prod"
+  config_version: "v1.0.0"
+
+# -------------------------
+# Discovery（只在发现层允许多模型）
+# -------------------------
+discovery:
+  lookback_window: "24h"         # 严格过去24h
+  watermark_delay: "90s"         # 刚发生信息留缓冲
+  multi_model_collect:
+    enabled: true
+    models: ["grok", "gpt", "gemini"]
+    merge_policy: "union_then_dedupe"
+    max_items_per_model: 40
+
+# -------------------------
+# Memory / RAG
+# -------------------------
+memory:
+  retrieval_windows:
+    dedupe: "24h"
+    analyst: "7d"
+  max_chunks: 12
+
+# -------------------------
+# Similarity / 去重聚类阈值
+# -------------------------
+similarity:
+  embedding_model: "text-embedding-3-large"
+  near_duplicate_threshold: 0.92
+  story_merge_threshold: 0.86
+  min_content_chars: 80
+
+# -------------------------
+# Rumor策略（你已拍板）
+# -------------------------
+rumor_policy:
+  allow_publish: true
+  require_label: true
+  label_text: "Rumor/Unconfirmed"
+  allowed_pools: ["traffic"]
+  forbid_price_conclusion: true
+  required_disclaimer: "Not financial advice"
+
+# -------------------------
+# 发布节奏（你已拍板）
+# -------------------------
+publishing:
+  cadence:
+    traffic_max_per_hour: 2
+    research_threads_per_day: 1
+  quiet_hours:
+    enabled: true
+    start: "00:00"
+    end: "07:00"
+    behavior: "queue_only"
+  retry_policy:
+    max_retries: 2
+    backoff_seconds: 20
+
+# -------------------------
+# Source tier + 白名单（你已拍板）
+# -------------------------
+source_tiers:
+  tiers:
+    official: 1
+    regulator: 1
+    tier1_media: 2
+    tier2_media: 3
+    community: 4
+  whitelist_yaml: "configs/source_whitelist.yaml"
+  require_whitelist_for_strong_evidence: true
+
+# -------------------------
+# Source Profiles（RSS/Official/X等配置化）
+# -------------------------
+source_profiles_yaml: "configs/source_profiles.yaml"
+
+# -------------------------
+# Copywriter-only（Judge之后，Gemini不参与事实判断）
+# -------------------------
+copywriter:
+  enabled: true
+  model: "gemini"
+  stage: "after_judge"
+  constraints:
+    immutable_facts: true
+    keep_labels: true
+    forbid_price_call: true
+  templates:
+    traffic:
+      template_id: "traffic_v1"
+      max_chars: 260
+    research_thread:
+      template_id: "thread_v1"
+      max_tweets: 8
+
+# -------------------------
+# Research输出硬字段（counter_case 必须）
+# -------------------------
+research_output:
+  required_fields:
+    - "thesis"
+    - "evidence_links"
+    - "counter_case"
+    - "what_would_change_mind"
+    - "risk_notes"
+
+# -------------------------
+# 调度：Event-driven + CRON + 动态加频规则（全配置）
+# -------------------------
+scheduling:
+  mode: "event_driven_plus_cron"
+  rate_limits:
+    discovery_runs_per_minute_max: 6
+    processing_concurrency_max: 10
+    per_model_qps:
+      grok: 0.5
+      gpt: 1.0
+      gemini: 1.0
+  jitter:
+    enabled: true
+    ratio: 0.15
+
+  tasks:
+    - id: "task_01_hot_radar"
+      enabled: true
+      base_interval: "30m"
+      min_interval: "5m"
+      max_interval: "90m"
+      cooldown: "45m"
+
+    - id: "task_02_controversy"
+      enabled: true
+      base_interval: "45m"
+      min_interval: "10m"
+      max_interval: "120m"
+      cooldown: "60m"
+
+    - id: "task_03_rumor"
+      enabled: true
+      base_interval: "30m"
+      min_interval: "5m"
+      max_interval: "90m"
+      cooldown: "45m"
+
+    - id: "task_04_ai_crypto_narrative"
+      enabled: true
+      base_interval: "60m"
+      min_interval: "15m"
+      max_interval: "180m"
+      cooldown: "90m"
+
+    - id: "task_05_tokenomics_structure"
+      enabled: true
+      base_interval: "90m"
+      min_interval: "30m"
+      max_interval: "240m"
+      cooldown: "120m"
+
+    - id: "task_06_ai_infra_compute_energy"
+      enabled: true
+      base_interval: "60m"
+      min_interval: "15m"
+      max_interval: "240m"
+      cooldown: "90m"
+
+    - id: "task_07_macro_liquidity"
+      enabled: true
+      base_interval: "60m"
+      min_interval: "15m"
+      max_interval: "240m"
+      cooldown: "90m"
+
+    - id: "task_08_institutions_tradfi"
+      enabled: true
+      base_interval: "90m"
+      min_interval: "30m"
+      max_interval: "240m"
+      cooldown: "120m"
+
+    - id: "task_09_edge_alpha"
+      enabled: true
+      base_interval: "90m"
+      min_interval: "30m"
+      max_interval: "240m"
+      cooldown: "120m"
+
+    - id: "task_10_counter_consensus_risk"
+      enabled: true
+      base_interval: "90m"
+      min_interval: "30m"
+      max_interval: "240m"
+      cooldown: "120m"
+
+  dynamic_boost_rules:
+    - name: "breaking_official"
+      priority: 100
+      when_all:
+        - metric: "official_breaking_count"
+          op: ">="
+          value: 1
+          window: "15m"
+      then:
+        set_intervals:
+          task_01_hot_radar: "5m"
+          task_03_rumor: "5m"
+          task_02_controversy: "10m"
+        hold_for: "90m"
+
+    - name: "discussion_spike"
+      priority: 80
+      when_all:
+        - metric: "x_discussion_spike_score"
+          op: ">="
+          value: 0.85
+          window: "20m"
+      then:
+        set_intervals:
+          task_01_hot_radar: "10m"
+          task_02_controversy: "15m"
+          task_04_ai_crypto_narrative: "30m"
+        hold_for: "60m"
+
+    - name: "low_activity_downshift"
+      priority: 10
+      when_all:
+        - metric: "signals_ingested"
+          op: "<="
+          value: 5
+          window: "60m"
+      then:
+        set_intervals:
+          task_01_hot_radar: "60m"
+          task_03_rumor: "60m"
+        hold_for: "120m"
+
+    - name: "api_error_backoff"
+      priority: 999
+      when_all:
+        - metric: "llm_error_rate"
+          op: ">="
+          value: 0.15
+          window: "10m"
+      then:
+        set_mode: "degraded"
+        multiply_intervals_by: 2.0
+        hold_for: "30m"
+
+# -------------------------
+# MVP 技术栈（你已拍板）
+# -------------------------
+tech_stack:
+  orchestration: "langgraph"
+  queue: "redis"
+  db:
+    primary: "postgres"
+    vector: "pgvector"     # 可切 qdrant
+  redis:
+    url: "redis://localhost:6379/0"
+  postgres:
+    dsn: "postgresql+psycopg://user:pass@localhost:5432/xagentic"
+```
+
+## 配置：把“三模型并行搜集”纳入统一配置文件
+
+### A) `configs/app.yaml` 增补 discovery.collectors
+
+```yaml
+discovery:
+  lookback_window: "24h"
+  watermark_delay: "90s"
+
+  collectors:
+    - id: "llm_tasks"
+      type: "llm_task_collector"
+      enabled: true
+      tasks_yaml: "configs/tasks.yaml"
+      prompts_yaml: "configs/prompts.yaml"
+      models:
+        grok:
+          enabled: true
+          weight: 1.0
+        gpt:
+          enabled: true
+          weight: 0.9
+        gemini:
+          enabled: true
+          weight: 0.9
+      merge_policy: "union_then_dedupe"
+      max_items_per_model_per_task: 40
+
+    - id: "rss_official"
+      type: "rss_collector"
+      enabled: true
+      source_profiles_yaml: "configs/source_profiles.yaml"
+```
+
+### B) `configs/tasks.yaml`（控制每个任务跑哪些模型 + 基础频率）
+
+```yaml
+tasks:
+  - id: "task_01_hot_radar"
+    enabled: true
+    base_interval: "30m"
+    models: ["grok", "gpt", "gemini"]
+
+  - id: "task_03_rumor"
+    enabled: true
+    base_interval: "30m"
+    models: ["grok", "gpt"]         # 例：rumor 先省成本，不必三跑
+```
+
+### C) `configs/prompts.yaml`（Prompt 版本化）
+
+```yaml
+prompt_version: "p1.0"
+
+common_output_contract: |
+  输出必须是 JSON 数组，每个元素字段：
+  origin_url, origin_type, topic, domain, signal_type, entities,
+  discussion_level, time_sensitivity, suggested_track,
+  rumor_flag, what_to_verify, why_selected.
+  不要输出任何额外解释文字。
+
+prompts:
+  task_01_hot_radar: |
+    你是“AI×Crypto 热点雷达”。扫描过去 {{lookback_window}} 的 X 讨论，
+    找出讨论密度突然上升、多个大号同时提及、情绪极端的主题。
+    只输出高信号候选，必须带 origin_url。
+    {{common_output_contract}}
+
+  task_03_rumor: |
+    你是“AI×Crypto Rumor 雷达”。扫描过去 {{lookback_window}} 的核心圈层传闻，
+    找出未确认但重复传播的 rumor，必须说明 what_to_verify，并带 origin_url。
+    {{common_output_contract}}
+```
+
+---
+
+## 落库：你需要把“三模型采集”写进 raw_items 元数据
+
+你现在 raw_items 表里建议补这几列（或放 meta JSONB 里也行，但我建议关键字段单列）：
+
+必备字段：
+
+* `collector_id`（llm_tasks / rss_official）
+* `collector_type`（llm_task_collector / rss_collector）
+* `model_name`（grok/gpt/gemini，RSS 则为空）
+* `task_id`（task_01...task_10）
+* `prompt_version`
+* `origin_url`（tweet/article 原始链接）
+* `origin_external_id`（tweet_id / rss_guid）
+* `origin_source_tier`（community/tier1_media/official —— 注意这是 origin 的 tier，不是模型的 tier）
+
+> 这样你才能在 UI 里看到：“这条线索是 Grok+GPT 都命中的，origin 是某 tweet；后面 Verifier 用官方公告确认了”。
+
+---
+
+## 多模型合并策略：不把“多模型一致”当成事实，只当成“讨论度/线索强度”
+
+合并后输出给 Processing 层时，建议追加两个“发现层特征”：
+
+* `mentioned_by_models: ["grok","gpt"]`
+* `discovery_consensus_score: 0~1`（比如命中模型数/权重归一化）
+
+**但：Initial_Credibility 不能因为“模型都说了”而提升**
+Credibility 只能由 **origin source tier + evidence** 提升（官方/监管/权威媒体）。
+
+---
+
+## PRD 需要写清楚的验收点（针对三模型搜集）
+
+MVP 验收标准里加 3 条：
+
+1. 每个 Task 触发后，系统能看到 **每个模型各自产出的候选列表**（可追溯到 origin_url）
+2. 合并后 raw_items 去重：同一 origin_url（或 tweet_id）不会重复入库
+3. UI 里能看到某条 signal 的 `mentioned_by_models`，用于讨论度评分加成，但不会直接变 confirmed
+
+---
+
+---
+
+## 2) 白名单：`configs/source_whitelist.yaml`
+
+```yaml
+official_domains:
+  - "binance.com"
+  - "okx.com"
+  - "coinbase.com"
+  - "bybit.com"
+  - "ethereum.org"
+  - "solana.com"
+  - "arbitrum.io"
+  - "optimism.io"
+
+regulator_domains:
+  - "sec.gov"
+  - "cftc.gov"
+  - "europa.eu"
+
+tier1_media_domains:
+  - "coindesk.com"
+  - "theblock.co"
+  - "dlnews.com"
+  - "reuters.com"
+  - "bloomberg.com"
+
+tier2_media_domains:
+  - "cointelegraph.com"
+  - "decrypt.co"
+```
+
+---
+
+## 3) Source Profiles：`configs/source_profiles.yaml`
+
+```yaml
+sources:
+  - id: "binance_announcements"
+    type: "official_rss"
+    enabled: true
+    url: "https://www.binance.com/en/support/announcement/rss"
+    tier: "official"
+    weight: 1.0
+    poll_interval: "3m"
+    parser: "rss_standard"
+    dedupe_keys: ["guid", "link"]
+
+  - id: "okx_announcements"
+    type: "official_rss"
+    enabled: true
+    url: "https://www.okx.com/help/rss"
+    tier: "official"
+    weight: 0.9
+    poll_interval: "5m"
+    parser: "rss_standard"
+    dedupe_keys: ["guid", "link"]
+
+  - id: "odaily_rss"
+    type: "media_rss"
+    enabled: true
+    url: "https://www.odaily.news/rss"
+    tier: "tier2_media"
+    weight: 0.6
+    poll_interval: "10m"
+    parser: "rss_cn_media"
+    dedupe_keys: ["guid", "link"]
+
+  - id: "x_grok_tasks"
+    type: "x_discovery"
+    enabled: true
+    tier: "community"
+    weight: 0.5
+    poll_interval: "0m"
+    parser: "grok_task"
+    params:
+      list_id: "YOUR_X_LIST_ID"
+      min_engagement: 50
+```
+
+---
+
+## 4) 核心数据模型：Signal → Claim → Evidence → Story（v1.0）
+
+### 4.1 Signal（核心对象）
+
+必须包含：**claims/evidence/verdict/routing/scores/config_version**
+（这样才能：可验证、可追溯、可复盘、可并发幂等）
+
+```json
+{
+  "signal_id": "uuid",
+  "story_id": "uuid",
+  "cluster_id": "uuid",
+  "created_at": "2025-12-18T00:00:00Z",
+  "detected_at": "2025-12-18T00:00:00Z",
+  "topic": "BTC ETF flow spike",
+  "domain": "Crypto",
+  "signal_type": "event",
+  "time_sensitivity": "high",
+  "discussion_level": "high",
+  "initial_credibility": "medium",
+  "entities": ["BTC", "ETF", "BlackRock"],
+  "claims": [
+    {
+      "claim_id": "uuid",
+      "claim_text": "某ETF当日净流入达到X",
+      "claim_type": "data",
+      "entities": ["ETF", "BTC"],
+      "time_ref": "2025-12-18",
+      "verifiability": "verifiable"
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "uuid",
+      "url": "https://...",
+      "canonical_url": "https://...",
+      "source_profile_id": "coindesk_rss",
+      "source_tier": "tier1_media",
+      "captured_at": "2025-12-18T00:00:00Z",
+      "title": "Article title",
+      "snippet": "supporting snippet",
+      "content_hash": "sha256..."
+    }
+  ],
+  "verdict": {
+    "status": "partial",
+    "confidence": 0.74,
+    "supporting_sources": ["https://..."],
+    "contradictions": [],
+    "what_would_confirm": ["官方数据源链接或监管披露"]
+  },
+  "routing": {
+    "lane": "fast",
+    "suggested_track": "traffic",
+    "publish_level": "semi",
+    "required_labels": ["Rumor/Unconfirmed"],
+    "risk_notes": ["avoid price call"]
+  },
+  "scores": {
+    "novelty": 78,
+    "credibility": 62,
+    "discussion": 85,
+    "impact": 80,
+    "time_sensitivity": 90,
+    "risk": 35,
+    "total": 76
+  },
+  "config_version": "v1.0.0"
+}
+```
+
+### 4.2 Story（事件生命周期）
+
+```json
+{
+  "story_id": "uuid",
+  "title": "BTC ETF flows week of 2025-12-18",
+  "entities": ["BTC", "ETF"],
+  "status": "monitoring",
+  "started_at": "2025-12-18T00:00:00Z",
+  "latest_update_at": "2025-12-18T02:00:00Z",
+  "summary": "short evolving summary",
+  "timeline": [
+    {"ts": "2025-12-18T00:00:00Z", "signal_id": "uuid", "event": "detected"},
+    {"ts": "2025-12-18T01:00:00Z", "signal_id": "uuid", "event": "updated"}
+  ]
+}
+```
+
+---
+
+## 5) 幂等去重 + 聚类归并（你系统能长期跑的关键）
+
+### 5.1 Exact Dedupe（硬去重）
+
+* RSS：`guid` / `link`
+* X：`tweet_id`
+* Web：`canonical_url`
+* 统一落库字段：`raw_hash`、`canonical_hash`
+
+  * `raw_hash = sha256(raw_content + source_profile_id)`
+  * `canonical_hash = sha256(canonical_url || normalized_text)`
+
+**规则：**命中 exact → 直接丢弃或仅更新“提及计数/热度”。
+
+### 5.2 Near Dedupe（近重复，阈值 0.92）
+
+* content_chars < `min_content_chars`：跳过向量去重，只做 exact
+* 否则：embedding 相似度 ≥ 0.92 → 归入同一 `cluster_id`
+
+### 5.3 Story Merge（同一事件归并，阈值 0.86）
+
+* cluster 的中心向量 vs story 中心向量 ≥ 0.86 → 归入同 story
+* story_id 生成策略（建议稳定）：`uuid_v5(namespace, topic+sorted(entities)+time_bucket)`
+
+---
+
+## 6) Postgres 表结构（含 pgvector 索引）——可直接迁移
+
+> 这份是 MVP 最小但完整闭环（raw→signal→story→draft→review→publish + metrics/trace）
+
+### 6.1 `migrations/001_init.sql`
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- 1) 原始入库（来自RSS/X/Search）
+CREATE TABLE raw_items (
+  raw_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_profile_id TEXT NOT NULL,
+  source_tier TEXT NOT NULL,
+  source_url TEXT,
+  canonical_url TEXT,
+  external_id TEXT,                      -- tweet_id / rss_guid / etc
+  title TEXT,
+  raw_text TEXT,
+  lang TEXT,
+  published_at TIMESTAMPTZ,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  raw_hash TEXT NOT NULL,
+  canonical_hash TEXT,
+  meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE UNIQUE INDEX uq_raw_items_raw_hash ON raw_items(raw_hash);
+CREATE INDEX idx_raw_items_external_id ON raw_items(source_profile_id, external_id);
+CREATE INDEX idx_raw_items_fetched_at ON raw_items(fetched_at);
+
+-- 2) 向量与聚类（cluster）
+CREATE TABLE clusters (
+  cluster_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  centroid vector(3072),                 -- 按你的embedding维度调整
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 3) Story（事件生命周期）
+CREATE TABLE stories (
+  story_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title TEXT,
+  entities TEXT[] NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'new',     -- new/monitoring/verified/published/updated/retracted/archived
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  latest_update_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  summary TEXT,
+  meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_stories_status ON stories(status);
+CREATE INDEX idx_stories_latest_update ON stories(latest_update_at);
+
+-- 4) Signal（结构化信号）
+CREATE TABLE signals (
+  signal_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  raw_id UUID REFERENCES raw_items(raw_id) ON DELETE SET NULL,
+  story_id UUID REFERENCES stories(story_id) ON DELETE SET NULL,
+  cluster_id UUID REFERENCES clusters(cluster_id) ON DELETE SET NULL,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  topic TEXT,
+  domain TEXT NOT NULL,                  -- AI/Crypto/AI+Crypto
+  signal_type TEXT NOT NULL,             -- rumor/event/narrative/data
+
+  time_sensitivity TEXT,
+  discussion_level TEXT,
+  initial_credibility TEXT,
+
+  entities TEXT[] NOT NULL DEFAULT '{}',
+  verdict JSONB NOT NULL DEFAULT '{}'::jsonb,
+  routing JSONB NOT NULL DEFAULT '{}'::jsonb,
+  scores JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+  config_version TEXT NOT NULL
+);
+
+CREATE INDEX idx_signals_story ON signals(story_id);
+CREATE INDEX idx_signals_cluster ON signals(cluster_id);
+CREATE INDEX idx_signals_detected ON signals(detected_at);
+
+-- 5) Claims（可验证单元）
+CREATE TABLE claims (
+  claim_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  signal_id UUID NOT NULL REFERENCES signals(signal_id) ON DELETE CASCADE,
+  claim_text TEXT NOT NULL,
+  claim_type TEXT NOT NULL,              -- event/data/quote
+  entities TEXT[] NOT NULL DEFAULT '{}',
+  time_ref TEXT,
+  verifiability TEXT NOT NULL DEFAULT 'verifiable',
+  status TEXT NOT NULL DEFAULT 'unknown' -- unknown/confirmed/partial/unconfirmed/false
+);
+
+CREATE INDEX idx_claims_signal ON claims(signal_id);
+
+-- 6) Evidence（证据）
+CREATE TABLE evidence (
+  evidence_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  signal_id UUID NOT NULL REFERENCES signals(signal_id) ON DELETE CASCADE,
+  claim_id UUID REFERENCES claims(claim_id) ON DELETE SET NULL,
+
+  url TEXT NOT NULL,
+  canonical_url TEXT,
+  source_profile_id TEXT,
+  source_tier TEXT,
+  captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  title TEXT,
+  snippet TEXT,
+  content_hash TEXT,
+  meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_evidence_signal ON evidence(signal_id);
+
+-- 7) Draft（待发布稿件：结构化落库）
+CREATE TABLE drafts (
+  draft_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  story_id UUID REFERENCES stories(story_id) ON DELETE SET NULL,
+  signal_id UUID REFERENCES signals(signal_id) ON DELETE SET NULL,
+
+  track TEXT NOT NULL,                   -- traffic/research
+  publish_level TEXT NOT NULL,           -- auto/semi/manual
+  status TEXT NOT NULL DEFAULT 'draft',  -- draft/needs_more_evidence/approved/rejected/published
+
+  language TEXT NOT NULL DEFAULT 'zh',
+  template_id TEXT,
+  content TEXT,
+  fact_checksum TEXT,                    -- 关键事实校验hash（防tone改事实）
+  labels TEXT[] NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  review_meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_drafts_status ON drafts(status);
+CREATE INDEX idx_drafts_created ON drafts(created_at);
+
+-- 8) Model Runs（可观测性 & 成本）
+CREATE TABLE model_runs (
+  run_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  signal_id UUID REFERENCES signals(signal_id) ON DELETE SET NULL,
+  node_name TEXT NOT NULL,
+  model_name TEXT NOT NULL,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  success BOOLEAN NOT NULL DEFAULT true,
+  prompt_tokens INT,
+  completion_tokens INT,
+  cost_usd NUMERIC(12,6),
+  error TEXT,
+  meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_model_runs_node_time ON model_runs(node_name, started_at);
+
+-- 9) Metrics（用于动态加频规则）
+CREATE TABLE metrics (
+  metric_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  metric_name TEXT NOT NULL,
+  window TEXT NOT NULL,                  -- "15m"/"60m"
+  ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+  value NUMERIC(18,6) NOT NULL,
+  meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_metrics_name_ts ON metrics(metric_name, ts);
+
+-- 10) 向量（可选：signal级别向量，便于检索/聚类）
+CREATE TABLE signal_vectors (
+  signal_id UUID PRIMARY KEY REFERENCES signals(signal_id) ON DELETE CASCADE,
+  embedding vector(3072),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- HNSW/IVFFLAT（二选一，视pgvector版本/数据量）
+-- 示例：IVFFLAT
+CREATE INDEX idx_signal_vectors_ivf ON signal_vectors USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+```
+
+---
+
+## 7) LangGraph：State Schema + 节点 I/O + 拓扑（可直接照实现）
+
+### 7.1 全局 State（强建议 Pydantic）
+
+关键字段必须包含：`config_version / raw_id / signal_id / story_id / cluster_id / claims / evidence / verdict / routing / draft`
+
+```python
+# src/graph/state.py（示意）
+from pydantic import BaseModel
+from typing import Any, Dict, List, Optional
+
+class GraphState(BaseModel):
+    cfg: Any
+    config_version: str
+
+    # 输入
+    raw_id: Optional[str] = None
+    raw_content: Optional[Dict[str, Any]] = None   # raw_items 行或其子集
+
+    # 处理中间态
+    normalized_text: Optional[str] = None
+    canonical_url: Optional[str] = None
+    raw_hash: Optional[str] = None
+    canonical_hash: Optional[str] = None
+
+    cluster_id: Optional[str] = None
+    story_id: Optional[str] = None
+    signal_id: Optional[str] = None
+
+    classification_result: Dict[str, Any] = {}
+    claims: List[Dict[str, Any]] = []
+    evidence: List[Dict[str, Any]] = []
+
+    verdict: Dict[str, Any] = {}
+    analysis_report: Dict[str, Any] = {}
+    risk_decision: Dict[str, Any] = {}
+
+    routing: Dict[str, Any] = {}
+    scores: Dict[str, Any] = {}
+
+    draft: Dict[str, Any] = {}
+    errors: List[str] = []
+```
+
+### 7.2 节点定义（最小闭环）
+
+**主链路：**
+Ingest → Normalize → ExactDedupe → Embed+Cluster → StoryMatch → Classifier → (Fork) Verifier || Analyst → Judge → DraftGen → Copywriter → OutputPools（+ Human Review）
+
+#### Node: Ingest
+
+* In: 外部拉取 item（RSS/X/Search）
+* Out: `raw_id/raw_content/raw_hash/canonical_url/external_id`
+
+#### Node: Normalize
+
+* In: raw_content
+* Out: `normalized_text/canonical_hash/lang/entities_hint`
+
+#### Node: ExactDedupe
+
+* In: raw_hash/canonical_hash/external_id
+* Logic: 命中则 `state.end_reason="duplicate_exact"` 并终止
+
+#### Node: Embed+Cluster
+
+* In: normalized_text
+* Out: signal_vector、cluster_id（near-duplicate 0.92 聚类）
+
+#### Node: StoryMatch
+
+* In: cluster centroid + entities + time_ref
+* Out: story_id（0.86 merge；否则新建）
+
+#### Node: Classifier（LLM-1，小/中模型）
+
+* Out: `signal_type/domain/time_sensitivity/discussion_level/initial_risk/topic/entities`
+
+#### Fork:
+
+* Node: Verifier（LLM-2 + Search Agent，白名单强证据）
+
+  * Out: verdict（confirmed/partial/unconfirmed/false + sources/contradictions/what_would_confirm）
+* Node: Analyst（LLM-3，大模型 + Memory 7d）
+
+  * Out: analysis_report（market/narrative/affected_assets + stance_update）
+
+#### Node: Judge（LLM-4）
+
+* In: classification + verdict + analysis
+* Out: risk_decision + routing（fast/slow, track, publish_level, labels, risk_notes）
+* Hard rules：
+
+  * verdict=false 且风险高 → 丢弃或进 Manual（不自动发）
+  * rumor + 高讨论度 → traffic（带 Rumor 标签）
+  * research 输出必须包含 counter_case（缺失则回流补全或 manual）
+
+#### Node: DraftGen
+
+* Out: draft（结构化要点 + 模板选择 + fact_checksum）
+
+#### Node: Copywriter（Gemini copywriter-only）
+
+* In: 结构化要点（不喂原始网页长文）
+* Out: final content（不改事实；保留标签；禁止喊单）
+* Out: 更新 fact_checksum（校验通过才写回）
+
+---
+
+## 8) Draft/Queue/HITL（审核台最小产品闭环）
+
+**draft.status** 建议只用这几个就够：
+
+* `draft`（默认）
+* `needs_more_evidence`
+* `approved`
+* `rejected`
+* `published`
+
+审核动作（写入 drafts.review_meta）：
+
+* approve / reject(reason) / ask_for_more_evidence / merge_to_story / split_thread
+
+---
+
+## 9) 指标（动态加频规则用的最小 5 个）
+
+调度器每分钟计算并写入 metrics 表：
+
+* `official_breaking_count(15m)`
+* `x_discussion_spike_score(20m)`（MVP先用“命中数增长率”近似）
+* `signals_ingested(60m)`
+* `llm_error_rate(10m)`
+* `queue_backlog`
+
+命中 `dynamic_boost_rules` 后：
+
+* 覆盖 task interval（带 `hold_for` TTL）
+* 触发 cooldown，避免频繁跳变
+
+---
+
+## 10) 安全与合规硬规则（建议写成 Judge 的 rule-first）
+
+Manual 必须触发：
+
+* 监管执法/诉讼/交易所负面
+* 未证实安全事件（黑客/冻结/挤兑）
+* 明确价格指引/喊单风格/诱导交易
+* 任何涉及敏感合规风险的内容
+
+Rumor 可发（你已拍板），但必须：
+
+* 只进 Traffic Pool
+* 必带标签与免责声明
+* 禁止价格结论/交易建议
+
+---
+
+---
+PM任务拆分
+
+# 0) 先定交付节奏（PM 视角的“切片”）
+
+**优先级铁律：先闭环能用（Phase 0）→ 再三角验证更准（Phase 1）→ 再自动回写/自适应优化（Phase 2）**
+
+**Phase 0 的定义**：你每天可以稳定用它完成
+“看到候选 → 看证据/来源 → 改稿 → approve/reject（必填原因）→ 一键复制发 X → 回写推文链接”。
+
+---
+
+# Phase 0：闭环可用（最小可发布）
+
+> 目标：Collectors → 入库 → 去重/Story → Draft → 审核台 → Copy-to-X → 记录动作
+
+## P0-E1 配置与契约（Contract & Config）
+
+**目的**：所有模块对齐同一套枚举/字段/版本，避免返工。
+
+### P0-S1：定义全局枚举与字段契约（Schema/Enums）
+
+* **内容**：domain、signal_type、lane、track、publish_level、verification_status、draft_status、reject_reason 等允许值集合
+* **AC**
+
+  1. 后端入库前校验枚举，不合法直接失败并记录错误
+  2. 前端下拉/过滤严格来自枚举
+* **依赖**：无
+* **DoD**：Schema 文件 + 单测覆盖非法值
+
+### P0-S2：配置加载与 config_version 贯穿全链路
+
+* **内容**：加载 app.yaml（含 TTL/频率/阈值），每条 signal/draft 必带 config_version
+* **AC**
+
+  1. signals/drafts/model_runs 均落库 config_version
+  2. 日志能追溯每条数据使用的 config_version
+* **依赖**：P0-S1
+* **DoD**：配置校验 + 默认值策略 + 错误提示清晰
+
+---
+
+## P0-E2 LLM 统一封装（LLM Router & Provider Adapters）
+
+**目的**：业务代码只写一次，不到处接 3 套 API。
+
+### P0-S3：实现 llm_router 统一接口（支持 3 Provider）
+
+* **内容**：OpenAI/xAI/Google 三个 provider adapter + 统一返回结构（text/json、usage、latency、error）
+* **AC**
+
+  1. 任意节点调用 router 时不关心厂商差异
+  2. 统一超时/重试/退避策略可配置
+* **依赖**：P0-E1
+* **DoD**：可本地跑通 3 家最小调用 + 失败可观测
+
+### P0-S4：model_runs 可观测落库（成本/耗时/错误）
+
+* **AC**
+
+  1. 每次 LLM 调用写入 model_runs（node/model/latency/success/error）
+  2. 失败不吞异常，能在 UI/日志定位
+* **依赖**：P0-S3、DB 迁移（P0-S6）
+* **DoD**：聚合查询示例 + 关键字段非空约束
+
+---
+
+## P0-E3 Collectors（官方 API + RSS）
+
+**目的**：把“发现层”跑起来，产出 raw_items，并且可追溯。
+
+### P0-S5：LLM Task Collector（多模型三跑 + 合并去重）
+
+* **内容**：按 tasks.yaml/prompts.yaml 运行；并行跑 grok/gpt/gemini；合并策略 union_then_dedupe
+* **AC**
+
+  1. 每次运行能看到“每个模型各自产出的候选列表”
+  2. 合并后同 origin_url/tweet_id 不重复入库
+  3. raw_items.meta 包含 mentioned_by_models + discovery_consensus_score
+* **依赖**：P0-S3、P0-S6（DB）
+* **DoD**：任务运行日志 + 幂等写入
+
+### P0-S6：RSS/Official Collector（白名单源配置化）
+
+* **AC**
+
+  1. RSS 拉取入库 raw_items，支持 source_profiles.yaml 配置新增源
+  2. guid/link 去重生效
+* **依赖**：P0-S6（DB）
+* **DoD**：至少接通 2 个 official RSS + 1 个媒体 RSS
+
+### P0-S7：origin_url 校验器 UrlValidator（MVP 必做）
+
+* **内容**：可访问/可解析 external_id/canonical_url；失败策略明确
+* **AC**
+
+  1. origin_url 校验失败 → draft 进入 needs_more_evidence 或直接 reject(low_cred)
+  2. UI 能看到失败原因（例如无法访问/无法解析/404）
+* **依赖**：P0-S5
+* **DoD**：单测覆盖常见 URL 类型（tweet、短链、网页）
+
+---
+
+## P0-E4 数据库与入库链路（Raw → Signal → Story → Draft）
+
+**目的**：保证幂等、去重、可追溯、可复盘。
+
+### P0-S8：DB migrations（最小闭环表）
+
+* **内容**：raw_items/signals/stories/clusters/drafts/model_runs/metrics (+ indexes)
+* **AC**
+
+  1. 本地一键迁移成功
+  2. raw_hash 唯一约束生效
+* **依赖**：无
+* **DoD**：迁移脚本 + rollback 策略（至少可重建）
+
+### P0-S9：Normalize + Exact Dedupe
+
+* **AC**
+
+  1. tweet_id/rss_guid/canonical_url 命中 exact → 不重复入库（或仅更新计数）
+  2. 计数/热度写在 meta 或单列字段
+* **依赖**：P0-S8、P0-S7
+* **DoD**：重复输入回放测试通过
+
+### P0-S10：Near Dedupe + Cluster（向量聚类最小版）
+
+* **AC**
+
+  1. 相似度≥阈值归同 cluster
+  2. content < min_chars 自动降级：只做 exact，不做 embedding
+* **依赖**：P0-S8
+* **DoD**：对 10 条相似样本的聚类结果稳定可解释
+
+### P0-S11：StoryMatch + Story 状态最小实现
+
+* **AC**
+
+  1. 同事件归并 story；新事件新建 story
+  2. story timeline 记录 signal 进入/更新
+* **依赖**：P0-S10
+* **DoD**：story 列表按 latest_update_at 排序正常
+
+---
+
+## P0-E5 草稿生成与发布约束（Draft + TTL + Queue）
+
+**目的**：可发的内容对象（draft）可控、可编辑、有风控标签。
+
+### P0-S12：DraftGen（Traffic/Research 两种模板最小版）
+
+* **AC**
+
+  1. Traffic 草稿含 hook + source_link + 标签位
+  2. Research 草稿含 thesis/evidence_links/counter_case 占位（缺失则 needs_more_evidence）
+* **依赖**：P0-S11
+* **DoD**：生成内容在 UI 可编辑、可复制
+
+### P0-S13：Rumor 策略硬约束（MVP）
+
+* **AC**
+
+  1. rumor 只能进 traffic
+  2. 自动加 Rumor/Unconfirmed + Not financial advice
+  3. 检测到“价格结论/交易指引”→ 强制 manual 或拒绝
+* **依赖**：P0-S12
+* **DoD**：规则单测 + 违规则样本回归
+
+### P0-S14：Traffic TTL=2h（可配置）+ 过期提示
+
+* **AC**
+
+  1. 超过 TTL 自动标记 stale/archived（或降权）
+  2. 仍可手动 approve，但 UI 提示“已过时”
+* **依赖**：P0-S12
+* **DoD**：定时任务/后台 job 可观测
+
+### P0-S15：发布节奏限制（每小时≤2条 traffic）+ Queue
+
+* **AC**
+
+  1. 超额 draft 不丢失，进入 queue
+  2. quiet_hours 行为 queue_only
+* **依赖**：P0-S12
+* **DoD**：策略可配置 + UI 可见队列状态
+
+---
+
+## P0-E6 审核台 Console（Human-in-the-loop MVP）
+
+**目的**：Owner 的每日工作台能跑通全流程。
+
+### P0-S16：Dashboard（今日信号数/待审/分布/延迟）
+
+* **AC**
+
+  1. 今日 signals、drafts 分布可见
+  2. Fast/Slow lane 数量可见
+* **依赖**：P0-E4/E5
+* **DoD**：基础筛选与刷新机制
+
+### P0-S17：列表页（按 story/cluster 聚合 + 过滤排序）
+
+* **AC**
+
+  1. 可按 track/lane/status/reject_reason 过滤
+  2. 同 story 聚合展示，展开可看子信号
+* **依赖**：P0-S11
+* **DoD**：分页/性能基线（别一次全拉）
+
+### P0-S18：详情页（左证据/中 claims&verdict/右 draft）
+
+* **AC**
+
+  1. 左侧显示来源链接（origin_url）+ captured_at
+  2. 右侧草稿可编辑，保留标签/免责声明
+* **依赖**：P0-S12
+* **DoD**：复制按钮输出完整可发文本
+
+### P0-S19：审核动作（approve/reject/ask_more/edit/merge/split）
+
+* **AC**
+
+  1. reject 必须选 reason（duplicate/low_cred/low_impact/too_risky/not_relevant/already_known）
+  2. ask_for_more_evidence 会把 draft 状态改 needs_more_evidence，并记录原因
+  3. merge/split 会更新 story 关联并记录审计日志
+* **依赖**：P0-S18
+* **DoD**：所有动作写入 drafts.review_meta（结构化）
+
+### P0-S20：发布回写（MVP 只回写 tweet_url）
+
+* **AC**
+
+  1. 你粘贴 tweet_url 后，draft 状态置为 published
+  2. 记录 published_at、tweet_url、发布模板、版本号
+* **依赖**：P0-S19
+* **DoD**：可在 story timeline 看到“已发布条目”
+
+---
+
+## P0-E7 测试与交付（质量闸门）
+
+### P0-S21：端到端 E2E 回放脚本（raw→draft→approve→published）
+
+* **AC**：给定 5 条样本 raw_items，能稳定跑出 draft 并完成审批动作
+* **依赖**：P0-E3~E6
+* **DoD**：CI 可跑、失败能定位
+
+### P0-S22：最小部署与运行手册（/docs）
+
+* **AC**：新机器按文档能跑起来（含 env vars、db、redis、启动顺序）
+* **依赖**：全链路
+* **DoD**：README + /docs（Runbook、Acceptance）
+
+---
+
+# Phase 1：Triangulation（Verifier/Analyst/Judge/Copywriter + 纠错）
+
+> 目标：更准、更安全、更可解释（但不破坏 Phase 0 的可用性）
+
+## P1-E1 Search Agent（白名单抓证据）
+
+* **Story**：白名单域名抓取、只读解析、落 evidence（content_hash/captured_at）
+* **AC**：非白名单直接 policy_block；证据分 tier；可复盘一致
+
+## P1-E2 Verifier（confirmed/partial/unconfirmed/false）
+
+* **AC**：X/Telegram 只能证明“有人在说”；必须输出 contradictions + what_would_confirm
+
+## P1-E3 Analyst（7d Memory + 变化点）
+
+* **AC**：必须引用近 7 天 story 摘要；明确“本次变化点”
+
+## P1-E4 Judge（rule-first 风控优先）
+
+* **AC**：Verifier=false/high-risk 可直接否决；research 缺 counter_case 不得 approved
+
+## P1-E5 Copywriter-only + fact_checksum
+
+* **AC**：不可删标签/免责声明；fact_checksum 失败禁止写回
+
+## P1-E6 纠错/撤回链路（corrected/retracted）
+
+* **AC**：出现矛盾证据可生成纠错草稿并关联旧发布
+
+---
+
+# Phase 2：优化与规模化
+
+* 自动回写 X 指标（如接 API）
+* 评分权重自适应（基于 reject_reason + 发布表现）
+* 协作者权限（RBAC）
+* 动态调度更精细（backlog、错误退避、热点加频）
+* 去重/错合并标注与数据集沉淀
+
+---
